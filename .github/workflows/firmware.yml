@@ -29,7 +29,18 @@ jobs:
       - name: Build control firmware
         run: pio run -d control -e xiao_control
       - name: Build communication firmware
-        run: pio run -d communication -e xiao_communication
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! pio run -d communication -e xiao_communication 2>&1 | tee /tmp/communication-build.log; then
+            python - <<'PY'
+          from pathlib import Path
+          lines = Path('/tmp/communication-build.log').read_text(errors='replace').splitlines()[-100:]
+          text = '\n'.join(lines).replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+          print(f'::error title=Communication firmware build::{text}')
+          PY
+            exit 1
+          fi
       - name: Assemble downloads and Web Installer
         shell: bash
         run: |
