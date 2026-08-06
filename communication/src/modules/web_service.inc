@@ -1,5 +1,5 @@
 String boolJson(bool value) { return value ? "true" : "false"; }
-String numberOrNull(float value, uint8_t digits = 3) { return isfinite(value) ? String(value, digits) : String("null"); }
+String numberOrNull(float value, unsigned int digits = 3) { return isfinite(value) ? String(value, digits) : String("null"); }
 
 void apiStatus() {
   const uint64_t t = nowUs();
@@ -96,4 +96,3 @@ void beginWeb() {
   });
   web.begin();
 }
-
