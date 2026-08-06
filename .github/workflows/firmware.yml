@@ -1,0 +1,86 @@
+name: Firmware
+on:
+  push:
+    branches: [main, 'agent/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: firmware-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install PlatformIO
+        run: pip install platformio
+      - name: Host protocol test
+        run: g++ -std=c++17 tests/protocol_test.cpp control/lib/boat_protocol/src/boat_protocol.cpp -o /tmp/protocol_test && /tmp/protocol_test
+      - name: Build control firmware
+        run: pio run -d control -e xiao_control
+      - name: Build communication firmware
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! pio run -d communication -e xiao_communication 2>&1 | tee /tmp/communication-build.log; then
+            python - <<'PY'
+          from pathlib import Path
+          lines = Path('/tmp/communication-build.log').read_text(errors='replace').splitlines()[-100:]
+          text = '\n'.join(lines).replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+          print(f'::error title=Communication firmware build::{text}')
+          PY
+            exit 1
+          fi
+      - name: Assemble downloads and Web Installer
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p dist/control dist/communication public/firmware/control public/firmware/communication
+          BOOT_APP0="$(find "$HOME/.platformio/packages/framework-arduinoespressif32" -name boot_app0.bin | head -n 1)"
+          for item in control communication; do
+            if [ "$item" = control ]; then env=xiao_control; else env=xiao_communication; fi
+            build="$item/.pio/build/$env"
+            cp "$build/firmware.bin" "$build/bootloader.bin" "$build/partitions.bin" "dist/$item/"
+            cp "$BOOT_APP0" "dist/$item/boot_app0.bin"
+            cp dist/$item/*.bin "public/firmware/$item/"
+            (cd "dist/$item" && sha256sum *.bin > SHA256SUMS.txt)
+          done
+          cp site/index.html public/index.html
+          cat > public/manifest-control.json <<'JSON'
+          {"name":"Two XIAO Boat - Control","version":"1.0.0","new_install_prompt_erase":true,"builds":[{"chipFamily":"ESP32-S3","parts":[{"path":"firmware/control/bootloader.bin","offset":0},{"path":"firmware/control/partitions.bin","offset":32768},{"path":"firmware/control/boot_app0.bin","offset":57344},{"path":"firmware/control/firmware.bin","offset":65536}]}]}
+          JSON
+          cat > public/manifest-communication.json <<'JSON'
+          {"name":"Two XIAO Boat - Communication","version":"1.0.0","new_install_prompt_erase":true,"builds":[{"chipFamily":"ESP32-S3","parts":[{"path":"firmware/communication/bootloader.bin","offset":0},{"path":"firmware/communication/partitions.bin","offset":32768},{"path":"firmware/communication/boot_app0.bin","offset":57344},{"path":"firmware/communication/firmware.bin","offset":65536}]}]}
+          JSON
+      - uses: actions/upload-artifact@v4
+        with:
+          name: two-xiao-boat-firmware
+          path: dist
+      - uses: actions/upload-pages-artifact@v3
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        with:
+          path: public
+
+  deploy-pages:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+      - id: deployment
+        uses: actions/deploy-pages@v4
